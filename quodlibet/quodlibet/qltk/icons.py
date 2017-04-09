@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Copyright 2014 Christoph Reiter
-#           2016 Nick Boultbee
+#        2016-17 Nick Boultbee
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -71,6 +71,7 @@ class Icons(str):
     FAVORITE = "emblem-favorite"
     FOLDER = "folder"
     FOLDER_DRAG_ACCEPT = "folder-drag-accept"
+    FOLDER_NEW = "folder-new"
     FOLDER_OPEN = "folder-open"
     FORMAT_JUSTIFY_FILL = "format-justify-fill"
     GO_JUMP = "go-jump"  # "_Jump to"

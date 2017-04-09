@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Copyright 2012 Christoph Reiter
-#           2016 Nick Boultbee
+#      2016-2017 Nick Boultbee
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -135,6 +135,8 @@ class TrackCurrentModel(ObjectStore):
         self.__iter = None
 
         oldsong = self.last_current
+        if not songs:
+            return
         for iter_, song in izip(self.iter_append_many(songs), songs):
             if song is oldsong:
                 self.__iter = iter_

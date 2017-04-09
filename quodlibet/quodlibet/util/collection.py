@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Copyright 2004-2013 Joe Wreschnig, Michael Urman, Iñigo Serna,
 #                     Christoph Reiter, Steven Robertson
-#           2011-2016 Nick Boultbee
+#           2011-2017 Nick Boultbee
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -23,7 +23,7 @@ from quodlibet.compat import xrange, text_type, number_types, string_types, \
     swap_to_string, listmap
 from collections import Iterable
 from quodlibet.util.path import escape_filename, unescape_filename
-from quodlibet.util.dprint import print_d
+from quodlibet.util.dprint import print_d, print_e
 from quodlibet.util.misc import total_ordering, hashable
 from .collections import HashedList
 
@@ -321,7 +321,12 @@ class Playlist(Collection, Iterable):
     Songs can appear more than once.
     """
 
+    DESCRIPTION = _("playlist")
+    """The translated description of this class"""
+
     __instances = []
+
+    is_container = False
 
     @classmethod
     def playlists_featuring(cls, song):
@@ -491,6 +496,7 @@ class Playlist(Collection, Iterable):
         return some, all
 
     def delete(self):
+        print_d("Removing %s" % self)
         self.clear()
         if self in self.__instances:
             self.__instances.remove(self)
@@ -529,20 +535,42 @@ class Playlist(Collection, Iterable):
         return u"\"%s\" (%s)" % (self.name, songs_text)
 
 
-class FileBackedPlaylist(Playlist):
-    """A `Playlist` that is stored as a file on disk"""
-
+class PathBasedPlaylist(Playlist):
+    """Base type for Playlists to add some generic File-like methods"""
     quote = staticmethod(escape_filename)
     unquote = staticmethod(unescape_filename)
 
-    def __init__(self, dir, name, library=None, validate=False):
+    def __init__(self, dir, name, library, validate=False):
+        super(PathBasedPlaylist, self).__init__(name, library)
         assert isinstance(dir, fsnative)
-        super(FileBackedPlaylist, self).__init__(name, library)
-
         self.dir = dir
-        if validate:
-            self.name = self._validated_name(name)
+        self.name = self._validated_name(name) if validate else name
         self._last_fn = self.filename
+
+    @property
+    def filename(self):
+        basename = self.quote(self.name)
+        return os.path.join(self.dir, basename)
+
+    def _validated_name(self, new_name):
+        base = super(PathBasedPlaylist, self)
+        new_name = base._validated_name(new_name)
+        basename = self.quote(new_name)
+        path = os.path.join(self.dir, basename)
+        if os.path.exists(path):
+            raise ValueError(_("\"%s\" already exists.") % new_name)
+        return new_name
+
+    def write(self):
+        pass
+
+
+class FileBackedPlaylist(PathBasedPlaylist):
+    """A `Playlist` that is stored as a file on disk"""
+
+    def __init__(self, dir, name, library=None, validate=False):
+        super(FileBackedPlaylist, self).__init__(dir, name, library,
+                                                 validate)
         self.__populate_from_file()
 
     def __populate_from_file(self):
@@ -562,7 +590,7 @@ class FileBackedPlaylist(Playlist):
                         self._list.append(line)
         except IOError:
             if self.name:
-                util.print_d(
+                print_d(
                     "Playlist '%s' not found, creating new." % self.name)
                 self.write()
 
@@ -589,21 +617,7 @@ class FileBackedPlaylist(Playlist):
         playlist.extend(songs)
         return playlist
 
-    @property
-    def filename(self):
-        basename = self.quote(self.name)
-        return os.path.join(self.dir, basename)
-
-    def _validated_name(self, new_name):
-        new_name = super(FileBackedPlaylist, self)._validated_name(new_name)
-        basename = self.quote(new_name)
-        path = os.path.join(self.dir, basename)
-        if os.path.exists(path):
-            raise ValueError(
-                    _("A playlist named %s already exists.") % new_name)
-        return new_name
-
-    def delete(self):
+    def delete(self, fn=None):
         super(FileBackedPlaylist, self).delete()
         self.__delete_file(self.filename)
 
@@ -611,8 +625,8 @@ class FileBackedPlaylist(Playlist):
     def __delete_file(cls, fn):
         try:
             os.unlink(fn)
-        except EnvironmentError:
-            pass
+        except EnvironmentError as e:
+            util.print_w("Couldn't delete %s (%s)" % (fn, e))
 
     def write(self):
         fn = self.filename
@@ -625,3 +639,85 @@ class FileBackedPlaylist(Playlist):
         if self._last_fn != fn:
             self.__delete_file(self._last_fn)
             self._last_fn = fn
+
+
+class CompositePlaylist(PathBasedPlaylist):
+    """A playlists itself consisting of playlists"""
+
+    DESCRIPTION = _("playlist folder")
+
+    is_container = True
+
+    def __init__(self, dir, name, library=None):
+        super(CompositePlaylist, self).__init__(dir, name, library)
+        self._playlists = []
+        self._last_fn = self.filename
+
+    @property
+    def playlists(self):
+        return self._playlists
+
+    def clear(self):
+        pass
+
+    def write(self):
+        for pl in self._playlists:
+            pl.write()
+
+        fn = self.filename
+        os.mkdir(fn)
+        print_d("Created directory %s" % fn)
+        if self._last_fn != fn:
+            self.delete(self._last_fn)
+            self._last_fn = fn
+
+    def delete(self, filename=None):
+        for pl in self._playlists:
+            pl.delete()
+        try:
+            os.rmdir(filename or self.filename)
+        except EnvironmentError as e:
+            print_e("Couldn't delete folder %s (%s)" % (filename, e))
+
+    def list(self, key):
+        return super().list(key)
+
+    @property
+    def songs(self):
+        s = []
+        for pl in self._playlists:
+            s.append(pl.songs)
+        return s
+
+    def add_playlist(self, pl):
+        self._playlists.append(pl)
+
+    def index(self, value):
+        raise NotImplementedError("Can't index a playlist folder")
+
+    def remove_songs(self, songs, leave_dupes=False):
+        raise NotImplementedError("Can't modify a playlist folder")
+
+    def extend(self, songs):
+        raise NotImplementedError("Can't modify a playlist folder")
+
+    def shuffle(self):
+        raise NotImplementedError("Can't shuffle a playlist folder")
+
+    def add_songs(self, filenames, library):
+        return False
+
+    def __len__(self):
+        return sum(len(pl) for pl in self._playlists)
+
+    def has_songs(self, songs):
+        return super().has_songs(songs)
+
+    @property
+    def has_duplicates(self):
+        return any(p.has_duplicates for p in self._playlists)
+
+    def __str__(self):
+        songs_text = (ngettext("%d child", "%d children", len(self.songs))
+                      % len(self.songs))
+        return u"\"%s\" folder (%s)" % (self.name, songs_text)

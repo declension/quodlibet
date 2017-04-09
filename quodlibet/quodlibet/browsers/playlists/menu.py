@@ -8,6 +8,7 @@
 from gi.repository import Gtk, Pango, GObject
 
 from quodlibet import ngettext, _
+from quodlibet import print_d
 from quodlibet import qltk
 from quodlibet.browsers.playlists.util import GetPlaylistName, PLAYLISTS
 from quodlibet.qltk import SeparatorMenuItem, get_menu_item_top_parent, Icons
@@ -19,24 +20,32 @@ class PlaylistMenu(Gtk.Menu):
         'new': (GObject.SignalFlags.RUN_LAST, None, (object,)),
     }
 
-    def __init__(self, songs, playlists, librarian=None):
+    def __init__(self, songs, playlists, librarian=None, include_new=True):
         super(PlaylistMenu, self).__init__()
         self.librarian = librarian
-        i = Gtk.MenuItem(label=_(u"_New Playlist…"), use_underline=True)
-        i.connect('activate', self._on_new_playlist_activate, songs)
-        self.append(i)
-        self.append(SeparatorMenuItem())
-        self.set_size_request(int(i.size_request().width * 2), -1)
+        if include_new:
+            i = Gtk.MenuItem(label=_(u"_New Playlist…"), use_underline=True)
+            i.connect('activate', self._on_new_playlist_activate, songs)
+            self.append(i)
+            self.append(SeparatorMenuItem())
+            self.set_size_request(int(i.size_request().width * 2), -1)
 
         for playlist in playlists:
             name = playlist.name
-            i = Gtk.CheckMenuItem(name)
-            some, all = playlist.has_songs(songs)
-            i.set_active(some)
-            i.set_inconsistent(some and not all)
-            i.get_child().set_ellipsize(Pango.EllipsizeMode.END)
-            i.connect(
-                'activate', self._on_toggle_playlist_activate, playlist, songs)
+            if playlist.is_container:
+                print_d("Loaded container playlist %s" % playlist)
+                i = Gtk.MenuItem(name)
+                i.set_submenu(
+                    PlaylistMenu(songs, playlist.playlists, librarian,
+                                 include_new=False))
+            else:
+                i = Gtk.CheckMenuItem(name)
+                some, all = playlist.has_songs(songs)
+                i.set_active(some)
+                i.set_inconsistent(some and not all)
+                i.get_child().set_ellipsize(Pango.EllipsizeMode.END)
+                i.connect('activate',
+                          self._on_toggle_playlist_activate, playlist, songs)
             self.append(i)
 
     def _on_new_playlist_activate(self, item, songs):

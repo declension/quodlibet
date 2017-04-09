@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright 2014-2016 Nick Boultbee
+# Copyright 2014-2017 Nick Boultbee
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -21,8 +21,9 @@ from quodlibet.util.collection import FileBackedPlaylist
 from quodlibet.util.path import mkdir, uri_is_valid
 
 
-# Directory for playlist files
 PLAYLISTS = os.path.join(quodlibet.get_user_dir(), "playlists")
+"""Directory for playlist files"""
+
 assert isinstance(PLAYLISTS, fsnative)
 if not os.path.isdir(PLAYLISTS):
     mkdir(PLAYLISTS)
@@ -30,8 +31,9 @@ if not os.path.isdir(PLAYLISTS):
 
 class ConfirmRemovePlaylistDialog(qltk.Message):
     def __init__(self, parent, playlist):
-        title = (_("Are you sure you want to delete the playlist '%s'?")
-                 % escape(playlist.name))
+        title = (_("Are you sure you want to delete the {type} '{name}'?"
+                   .format(type=escape(playlist.DESCRIPTION),
+                           name=escape(playlist.name))))
         description = (_("All information about the selected playlist "
                          "will be deleted and can not be restored."))
 

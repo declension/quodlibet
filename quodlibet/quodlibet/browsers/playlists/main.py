@@ -7,9 +7,12 @@
 # published by the Free Software Foundation
 
 import os
+import random
+from os.path import relpath
 from tempfile import NamedTemporaryFile
 
 from gi.repository import Gtk, GLib, Pango, Gdk
+from senf._fsnative import _fsnative
 
 import quodlibet
 from quodlibet import _
@@ -24,7 +27,7 @@ from quodlibet.formats import AudioFile
 from quodlibet.plugins.playlist import PLAYLIST_HANDLER
 from quodlibet.qltk.completion import LibraryTagCompletion
 from quodlibet.qltk.menubutton import MenuButton
-from quodlibet.qltk.models import ObjectStore, ObjectModelSort
+from quodlibet.qltk.models import ObjectStore, ObjectModelSort, ObjectTreeStore
 from quodlibet.qltk.searchbar import SearchBarBox
 from quodlibet.qltk.songlist import SongList
 from quodlibet.qltk.songsmenu import SongsMenu
@@ -35,7 +38,7 @@ from quodlibet.qltk.chooser import choose_files, create_chooser_filter
 from quodlibet.query import Query
 from quodlibet.util import connect_obj
 from quodlibet.util.dprint import print_d, print_w
-from quodlibet.util.collection import FileBackedPlaylist
+from quodlibet.util.collection import FileBackedPlaylist, CompositePlaylist
 from quodlibet.util.urllib import urlopen
 
 from .util import parse_m3u, parse_pls, PLAYLISTS, ConfirmRemovePlaylistDialog
@@ -74,14 +77,37 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
     def init(klass, library):
         klass.library = library
         model = klass.__lists.get_model()
-        for playlist in os.listdir(PLAYLISTS):
-            try:
-                playlist = FileBackedPlaylist(PLAYLISTS,
-                      FileBackedPlaylist.unquote(playlist), library=library)
-                model.append(row=[playlist])
-            except EnvironmentError:
-                print_w("Invalid Playlist '%s'" % playlist)
-                pass
+        dir_iters = {}
+        for root, dirs, fns in os.walk(PLAYLISTS):
+            to_remove = []
+            for dir in dirs:
+                if dir.startswith('.'):
+                    to_remove.append(dir)
+                else:
+                    pl = CompositePlaylist(dir=root,
+                                           name=FileBackedPlaylist.unquote(
+                                               dir), library=library)
+                    rel_path = relpath(os.path.join(root, dir), PLAYLISTS)
+                    parent = dir_iters.get(relpath(root, PLAYLISTS), None)
+                    if parent:
+                        ppl = model[parent][0]
+                        ppl._playlists.append(pl)
+                    dir_iters[rel_path] = model.append(parent=parent, row=[pl])
+            for d in to_remove:
+                dirs.remove(d)
+            rel = relpath(root, PLAYLISTS)
+            for fn in fns:
+                try:
+                    ufn = FileBackedPlaylist.unquote(fn)
+                    playlist = FileBackedPlaylist(root, ufn, library=library)
+                    parent = None if rel == '.' else dir_iters[rel]
+                    model.append(parent=parent, row=[playlist])
+                    if parent:
+                        ppl = model[parent][0]
+                        ppl._playlists.append(playlist)
+                except EnvironmentError as e:
+                    print_w("Invalid Playlist '%s' (%s)" % (fn, e))
+                    pass
 
         klass._ids = [
             library.connect('removed', klass.__removed),
@@ -114,7 +140,7 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
                 playlist.write()
                 break
         else:
-            model.get_model().append(row=[playlist])
+            model.get_model().append(parent=None, row=[playlist])
             playlist.write()
 
     @classmethod
@@ -140,7 +166,11 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
 
     def cell_data(self, col, cell, model, iter, data):
         playlist = model[iter][0]
-        cell.markup = markup = self.display_pattern % playlist
+
+        markup = ('<span size="large"><b>%s</b></span>' % playlist.name
+                  if playlist.is_container
+                  else self.display_pattern % playlist)
+
         if self.__last_render == markup:
             return
         self.__last_render = markup
@@ -161,10 +191,11 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
     def __get_selected_songs(self):
         songlist = qltk.get_top_parent(self).songlist
         model, rows = songlist.get_selection().get_selected_rows()
-        iters = map(model.get_iter, rows)
+        iters = [model.get_iter(row) for row in rows]
         return model, iters
 
-    __lists = ObjectModelSort(model=ObjectStore())
+    store = ObjectTreeStore()
+    __lists = ObjectModelSort(model=store)
     __lists.set_default_sort_func(ObjectStore._sort_on_value)
 
     def __init__(self, library):
@@ -212,12 +243,16 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
     def __configure_buttons(self, library):
         new_pl = qltk.Button(_("_New"), Icons.DOCUMENT_NEW, Gtk.IconSize.MENU)
         new_pl.connect('clicked', self.__new_playlist)
+        new_fol = qltk.Button(_("_New Folder"), Icons.FOLDER_NEW,
+                              Gtk.IconSize.MENU)
+        new_fol.connect('clicked', self.__new_playlist_folder)
         import_pl = qltk.Button(_("_Import"), Icons.LIST_ADD,
                                 Gtk.IconSize.MENU)
         import_pl.connect('clicked', self.__import, library)
         hb = Gtk.HBox(spacing=6)
         hb.set_homogeneous(False)
         hb.pack_start(new_pl, True, True, 0)
+        hb.pack_start(new_fol, True, True, 0)
         hb.pack_start(import_pl, True, True, 0)
         hb2 = Gtk.HBox(spacing=0)
         hb2.pack_start(hb, True, True, 0)
@@ -375,6 +410,11 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
                 GLib.idle_add(self._select_playlist, playlist)
             else:
                 playlist = model[path][0]
+                if playlist.is_container:
+                    print_d("Requested playlist move to %s..." % playlist)
+                    # TODO: handle playlist move...
+                    Gtk.drag_finish(ctx, False, False, etime)
+                    return
                 playlist.extend(songs)
             self.changed(playlist)
             Gtk.drag_finish(ctx, True, False, etime)
@@ -420,6 +460,7 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
         for itr in iters:
             if itr:
                 songs += model[itr][0].songs
+        print_d("Got %d DnD songs" % len(songs))
         if tid == 0:
             qltk.selection_set_songs(sel, songs)
         else:
@@ -428,12 +469,34 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
     def _select_playlist(self, playlist, scroll=False):
         view = self.__view
         model = view.get_model()
-        for row in model:
-            if row[0] is playlist:
-                view.get_selection().select_iter(row.iter)
-                if scroll:
-                    view.scroll_to_cell(row.path, use_align=True,
-                                        row_align=0.5)
+
+        def func(model, path, iter_, result):
+            item = model.get_value(iter_)
+            if item is playlist:
+                # pygobject bug: treepath only valid in callback,
+                # so make a copy
+                print_d("Found item: %s (%s). Result: %r"
+                        % (item, path, result))
+                result.append(path.copy())
+                return True
+            return False
+
+        results = []
+        model.foreach(func, results)
+        if results:
+            first_path = path = results[0]
+            self.__view.expand_row(path, False)
+
+            while True:
+                parent = model.iter_parent(model.get_iter(path))
+                if parent:
+                    path = model.get_path(parent)
+                    self.__view.expand_row(path, False)
+                else:
+                    break
+            view.get_selection().select_path(first_path)
+        else:
+            raise ValueError("Couldn't find playlist %s" % playlist)
 
     def __popup_menu(self, view, library):
         model, itr = view.get_selection().get_selected()
@@ -542,13 +605,39 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
         config.set("browsers", "query_text", text)
 
     def __new_playlist(self, activator):
-        playlist = FileBackedPlaylist.new(PLAYLISTS)
-        self.model.append(row=[playlist])
-        self._select_playlist(playlist, scroll=True)
+        parent, root = self.__get_parent()
+        playlist = FileBackedPlaylist.new(root)
+        self.model.append(parent=parent, row=[playlist])
+        # Expand once we have some children
+        self._expand_selected()
+        self._edit_playlist_name(playlist)
 
-        model, iter = self.__selected_playlists()
-        path = model.get_path(iter)
+    def _expand_selected(self):
+        model, itr = self.__selected_playlists()
+        self.__view.expand_row(model.get_path(itr), False)
+
+    def __new_playlist_folder(self, activator):
+        parent, root = self.__get_parent()
+        name = "New Folder %s" % random.randint(1, 99)
+        print_d("Creating a new playlist folder '%s' in %r" % (name, root))
+        playlist = CompositePlaylist(dir=_fsnative(root), name=name,
+                                     library=self.library)
+        playlist.write()
+        self.model.append(parent=parent, row=[playlist])
+        self._edit_playlist_name(playlist)
+
+    def _edit_playlist_name(self, playlist):
+        self._select_playlist(playlist, scroll=True)
+        model, itr = self.__selected_playlists()
+        path = model.get_path(itr)
         GLib.idle_add(self._start_rename, path)
+
+    def __get_parent(self):
+        model, itr = self.__selected_playlists()
+        selected = model[model.get_path(itr)][0]
+        if selected.is_container:
+            return model.convert_iter_to_child_iter(itr), selected.filename
+        return None, PLAYLISTS
 
     def __start_editing(self, render, editable, path):
         editable.set_text(self.__lists[path][0].name)
@@ -558,6 +647,7 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
 
     def _rename(self, path, newname):
         playlist = self.__lists[path][0]
+        print_d("Renaming %s..." % playlist)
         try:
             playlist.rename(newname)
         except ValueError as s:
@@ -566,9 +656,13 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
         else:
             row = self.__lists[path]
             child_model = self.model
-            child_model.remove(
-                self.__lists.convert_iter_to_child_iter(row.iter))
-            child_model.append(row=[playlist])
+            itr = self.__lists.convert_iter_to_child_iter(row.iter)
+            parent = child_model.iter_parent(itr)
+            print_d("Parent of %s is %s" % (row[0], parent))
+            child_model.remove(itr)
+            child_model.append(parent=parent, row=[playlist])
+            if parent:
+                self.__view.expand_row(child_model.get_path(parent), False)
             self._select_playlist(playlist, scroll=True)
 
     def __import(self, activator, library):

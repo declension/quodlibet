@@ -15,7 +15,7 @@ from tests import TestCase, mkdtemp
 from quodlibet.formats import AudioFile as Fakesong
 from quodlibet.formats._audio import NUMERIC_ZERO_DEFAULT, PEOPLE
 from quodlibet.util.collection import Album, Playlist, avg, bayesian_average, \
-    FileBackedPlaylist
+    FileBackedPlaylist, CompositePlaylist
 from quodlibet.library.libraries import FileLibrary
 from quodlibet.util import format_rating
 from quodlibet.compat import long
@@ -615,3 +615,36 @@ class TFileBackedPlaylist(TPlaylist):
             self.failUnless(song in pl)
 
             lib.destroy()
+
+
+class TCompositePlaylist(TestCase):
+    def setUp(self):
+        super(TCompositePlaylist, self).setUp()
+        self.temp = mkdtemp()
+
+    def teardown(self):
+        os.rmdir(self.temp)
+
+    def cpl(self, name, lib=None):
+        cpl = CompositePlaylist(self.temp, name, lib)
+        cpl.write()
+        return cpl
+
+    def pl(self, sub, name, lib=None):
+        return FileBackedPlaylist(os.path.join(self.temp, sub), name, lib)
+
+    def test_composite(self):
+        cpl = self.cpl("folder")
+        pl = self.pl("folder", "inside")
+        cpl.add_playlist(pl)
+        self.failUnlessEqual(cpl.playlists, [pl])
+        cpl._playlists.remove(pl)
+        self.failIf(cpl.playlists)
+
+    def test_length_is_composite(self):
+        cpl = self.cpl("folder")
+        pl = self.pl("folder", "inside")
+        cpl.add_playlist(pl)
+        self.failUnlessEqual(len(cpl), 0)
+        pl.extend(NUMERIC_SONGS)
+        self.failUnlessEqual(len(cpl), len(NUMERIC_SONGS))

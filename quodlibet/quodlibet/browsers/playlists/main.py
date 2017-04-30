@@ -20,6 +20,7 @@ from quodlibet import config
 from quodlibet import qltk
 from quodlibet.browsers import Browser
 from quodlibet.browsers._base import DisplayPatternMixin
+from quodlibet.browsers.playlists.menu import PlaylistMenu
 from quodlibet.browsers.playlists.prefs import Preferences, \
     DEFAULT_PATTERN_TEXT
 from quodlibet.compat import listfilter
@@ -412,7 +413,7 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
                 playlist = model[path][0]
                 if playlist.is_container:
                     print_d("Requested playlist move to %s..." % playlist)
-                    # TODO: handle playlist move...
+                    # TODO: handle playlist move (not just songs)...
                     Gtk.drag_finish(ctx, False, False, etime)
                     return
                 playlist.extend(songs)
@@ -508,6 +509,15 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
                          playlists=False, remove=False,
                          ratings=False)
         menu.preseparate()
+
+        def _move(model, itr):
+            print_d("Moving %s to %s?" % (model, itr))
+
+        move = MenuItem(_("_Move to Folder"), Icons.EDIT_MOVE)
+        move.set_submenu(PlaylistMenu([], self.playlists(), self.library,
+                                      include_new=False, folders_only=True))
+        connect_obj(move, 'activate', _move, model, itr)
+        menu.prepend(move)
 
         def _remove(model, itr):
             playlist = model[itr][0]

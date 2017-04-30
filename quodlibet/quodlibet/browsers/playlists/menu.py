@@ -20,7 +20,8 @@ class PlaylistMenu(Gtk.Menu):
         'new': (GObject.SignalFlags.RUN_LAST, None, (object,)),
     }
 
-    def __init__(self, songs, playlists, librarian=None, include_new=True):
+    def __init__(self, songs, playlists, librarian=None, include_new=True,
+                 folders_only=False):
         super(PlaylistMenu, self).__init__()
         self.librarian = librarian
         if include_new:
@@ -35,10 +36,17 @@ class PlaylistMenu(Gtk.Menu):
             if playlist.is_container:
                 print_d("Loaded container playlist %s" % playlist)
                 i = Gtk.MenuItem(name)
-                i.set_submenu(
-                    PlaylistMenu(songs, playlist.playlists, librarian,
-                                 include_new=False))
-            else:
+                children = [pl for pl in playlist.playlists
+                            if pl.is_container == folders_only]
+                if children:
+                    i.set_submenu(PlaylistMenu(songs, children, librarian,
+                                               include_new=False))
+                else:
+                    i.connect('activate',
+                              self._on_toggle_playlist_activate, playlist,
+                              songs)
+
+            elif not folders_only:
                 i = Gtk.CheckMenuItem(name)
                 some, all = playlist.has_songs(songs)
                 i.set_active(some)
